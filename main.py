@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 import uuid
 
@@ -25,7 +26,16 @@ def main() -> None:
 
     logger = make_logger(session_id)
     client = make_client()
-    result = run(client, MODELS, query, logger)
+
+    try:
+        result = run(client, MODELS, query, logger)
+    finally:
+        # Always clean up the browser session to avoid leaked processes.
+        subprocess.run(
+            ["agent-browser", "--session", session_id, "close"],
+            capture_output=True,
+        )
+        logger.debug("Browser session %s closed.", session_id)
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

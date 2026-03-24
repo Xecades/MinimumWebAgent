@@ -113,7 +113,5 @@ def _fmt_args(args: dict) -> str:
     parts = []
     for k, v in args.items():
         v_str = repr(v) if not isinstance(v, str) else f"{v!r}"
-        if len(v_str) > 80:
-            v_str = v_str[:77] + "..."
         parts.append(f"{k}={v_str}")
     return ", ".join(parts)

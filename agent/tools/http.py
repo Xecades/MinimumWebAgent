@@ -1,6 +1,7 @@
+import asyncio
+
 import httpx
 
-# Cap response body to avoid flooding the context window.
 _MAX_CHARS = 20_000
 
 TOOL_DEF: dict = {
@@ -8,51 +9,69 @@ TOOL_DEF: dict = {
     "function": {
         "name": "http_fetch",
         "description": (
-            "Fetch a URL and return the response status and body text. "
+            "Fetch one or more URLs in parallel and return each response status and body. "
             "Useful for REST APIs, raw HTML pages, or any HTTP resource."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "url": {
-                    "type": "string",
-                    "description": "The URL to fetch.",
+                "urls": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of URLs to fetch (fetched in parallel).",
                 },
                 "method": {
                     "type": "string",
                     "enum": ["GET", "POST", "PUT", "DELETE"],
-                    "description": "HTTP method (default: GET).",
+                    "description": "HTTP method applied to all URLs (default: GET).",
                 },
                 "headers": {
                     "type": "object",
-                    "description": "Optional HTTP headers as key-value pairs.",
+                    "description": "Optional HTTP headers applied to all requests.",
                 },
                 "body": {
                     "type": "string",
-                    "description": "Request body (for POST / PUT).",
+                    "description": "Request body for POST / PUT.",
                 },
             },
-            "required": ["url"],
+            "required": ["urls"],
         },
     },
 }
 
 
-def handle(
+async def _fetch_one(
+    client: httpx.AsyncClient,
     url: str,
+    method: str,
+    headers: dict,
+    body: bytes | None,
+) -> str:
+    try:
+        response = await client.request(method, url, headers=headers, content=body)
+        text = response.text[:_MAX_CHARS]
+        return f"### {url}\nHTTP {response.status_code}\n\n{text}"
+    except httpx.RequestError as exc:
+        return f"### {url}\nRequest failed: {exc}"
+
+
+async def _fetch_all(
+    urls: list[str],
+    method: str,
+    headers: dict,
+    body: bytes | None,
+) -> list[str]:
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+        return await asyncio.gather(
+            *[_fetch_one(client, url, method, headers, body) for url in urls]
+        )
+
+
+def handle(
+    urls: list[str],
     method: str = "GET",
     headers: dict | None = None,
     body: str | None = None,
 ) -> str:
-    try:
-        with httpx.Client(follow_redirects=True, timeout=30) as client:
-            response = client.request(
-                method,
-                url,
-                headers=headers or {},
-                content=body.encode() if body else None,
-            )
-        text = response.text[:_MAX_CHARS]
-        return f"HTTP {response.status_code}\n\n{text}"
-    except httpx.RequestError as exc:
-        return f"Request failed: {exc}"
+    results = asyncio.run(_fetch_all(urls, method, headers or {}, body.encode() if body else None))
+    return "\n\n---\n\n".join(results)
