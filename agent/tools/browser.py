@@ -1,4 +1,7 @@
+import re
 import subprocess
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
 # Each agent process sets its own session ID via set_session().
 _session_id: str | None = None
@@ -19,7 +22,7 @@ def _run(*args: str, timeout: int = 60) -> str:
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     stdout = result.stdout.strip()
     stderr = result.stderr.strip()
-    output = stdout or stderr or "(no output)"
+    output = _ANSI_ESCAPE.sub("", stdout or stderr or "(no output)")
     return output[:_MAX_CHARS]
 
 

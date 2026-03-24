@@ -2,7 +2,12 @@ import os
 
 from openai import OpenAI
 
-MODEL = "stepfun/step-3.5-flash:free"
+# Fallback order: first available model is used; on rate-limit the next is tried.
+MODELS: list[str] = [
+    "stepfun/step-3.5-flash:free",
+    "arcee-ai/trinity-large-preview:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+]
 
 
 def make_client() -> OpenAI:
