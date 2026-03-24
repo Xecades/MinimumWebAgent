@@ -111,7 +111,10 @@ TOOL_DEFS: list[dict] = [
 
 def _open(url: str) -> str:
     out = _run("open", url)
-    _run("wait", "--load", "networkidle")
+    try:
+        _run("wait", "--load", "networkidle", timeout=15)
+    except subprocess.TimeoutExpired:
+        pass  # page may still be usable even if not fully idle
     return out
 
 
