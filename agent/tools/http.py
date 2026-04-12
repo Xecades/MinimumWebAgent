@@ -4,7 +4,21 @@ from html.parser import HTMLParser
 
 import httpx
 
+from ..text import compact_whitespace
+
 _MAX_CHARS = 20_000
+_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0.0.0 Safari/537.36"
+)
+_DEFAULT_HEADERS = {
+    "User-Agent": _BROWSER_UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+}
 
 
 class _TextExtractor(HTMLParser):
@@ -89,15 +103,35 @@ async def _fetch_one(
     headers: dict,
     body: bytes | None,
 ) -> str:
-    try:
-        response = await client.request(method, url, headers=headers, content=body)
+    merged_headers = {**_DEFAULT_HEADERS, **headers}
+
+    async def _request(c: httpx.AsyncClient) -> str:
+        response = await c.request(method, url, headers=merged_headers, content=body)
         content_type = response.headers.get("content-type", "")
         raw = response.text
         if "html" in content_type or raw.lstrip().startswith("<"):
             raw = _html_to_text(raw)
-        text = raw[:_MAX_CHARS]
+        text = compact_whitespace(raw)[:_MAX_CHARS]
         return f"### {url}\nHTTP {response.status_code}\n\n{text}"
+
+    try:
+        return await _request(client)
     except httpx.RequestError as exc:
+        err_msg = str(exc)
+        if "ssl" in err_msg.lower():
+            try:
+                async with httpx.AsyncClient(
+                    follow_redirects=True,
+                    timeout=30,
+                    verify=False,
+                    trust_env=False,
+                ) as retry_client:
+                    body_text = await _request(retry_client)
+                return f"{body_text}\n\n[warning] TLS verification disabled fallback was used."
+            except Exception as retry_exc:  # noqa: BLE001
+                return f"### {url}\nRequest failed: {exc}\nRetry(without TLS verify) failed: {retry_exc}"
+        return f"### {url}\nRequest failed: {exc}"
+    except Exception as exc:  # noqa: BLE001
         return f"### {url}\nRequest failed: {exc}"
 
 

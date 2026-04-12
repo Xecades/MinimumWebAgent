@@ -1,5 +1,7 @@
 from ddgs import DDGS
 
+from ..text import compact_whitespace
+
 TOOL_DEF: dict = {
     "type": "function",
     "function": {
@@ -29,5 +31,8 @@ def handle(query: str, max_results: int = 5) -> str:
         return "No results found."
     lines = []
     for r in results:
-        lines.append(f"Title: {r['title']}\nSnippet: {r['body']}\nURL: {r['href']}\n")
+        title = compact_whitespace(str(r["title"]))
+        body = compact_whitespace(str(r["body"]))
+        href = compact_whitespace(str(r["href"]))
+        lines.append(f"Title: {title}\nSnippet: {body}\nURL: {href}\n")
     return "\n".join(lines)

@@ -1,6 +1,8 @@
 import re
 import subprocess
 
+from ..text import compact_whitespace
+
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
 # Each agent process sets its own session ID via set_session().
@@ -23,6 +25,7 @@ def _run(*args: str, timeout: int = 60) -> str:
     stdout = result.stdout.strip()
     stderr = result.stderr.strip()
     output = _ANSI_ESCAPE.sub("", stdout or stderr or "(no output)")
+    output = compact_whitespace(output)
     return output[:_MAX_CHARS]
 
 
