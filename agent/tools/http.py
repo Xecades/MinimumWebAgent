@@ -4,7 +4,7 @@ from html.parser import HTMLParser
 
 import httpx
 
-from ..text import compact_whitespace
+from ..util import compact_whitespace
 
 _MAX_CHARS = 20_000
 _BROWSER_UA = (

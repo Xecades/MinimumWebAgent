@@ -1,7 +1,7 @@
 import re
 import subprocess
 
-from ..text import compact_whitespace
+from ..util import compact_whitespace
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 

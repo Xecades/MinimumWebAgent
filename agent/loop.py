@@ -1,9 +1,11 @@
 import json
 import logging
+import time
 
 from openai import APIStatusError, NotFoundError, OpenAI, RateLimitError
 
 from .tools import ALL_TOOLS, TerminateSignal, dispatch
+from .util import compute_backoff_seconds, fmt_tool_args, tool_signature
 
 _SYSTEM_PROMPT = """\
 You are a research agent with access to web search, browser control, and HTTP fetch tools.
@@ -19,6 +21,7 @@ Rules:
 
 _DUPLICATE_CALL_THRESHOLD = 3
 _MAX_DUPLICATE_REFUSALS = 8
+_MAX_RATE_LIMIT_RETRIES_PER_MODEL = 6
 
 
 def run(
@@ -39,6 +42,7 @@ def run(
     last_tool_signature: str | None = None
     duplicate_streak = 0
     duplicate_refusals = 0
+    rate_limit_retries = 0
 
     while True:
         current_model = models[model_idx]
@@ -49,20 +53,35 @@ def run(
                 tools=ALL_TOOLS,
                 tool_choice="auto",
             )
-        except RateLimitError:
+            rate_limit_retries = 0
+        except RateLimitError as err:
+            rate_limit_retries += 1
+            if rate_limit_retries <= _MAX_RATE_LIMIT_RETRIES_PER_MODEL:
+                sleep_s = compute_backoff_seconds(err, rate_limit_retries)
+                logger.warning(
+                    "Rate-limited on %s (retry %s/%s) — backing off %.1fs",
+                    current_model,
+                    rate_limit_retries,
+                    _MAX_RATE_LIMIT_RETRIES_PER_MODEL,
+                    sleep_s,
+                )
+                time.sleep(sleep_s)
+                continue
             if model_idx + 1 < len(models):
                 model_idx += 1
+                rate_limit_retries = 0
                 logger.warning(
-                    "Rate-limited on %s — falling back to %s",
+                    "Rate-limited on %s after retries — falling back to %s",
                     current_model,
                     models[model_idx],
                 )
                 continue
-            logger.error("All models exhausted (rate limit). Giving up.")
+            logger.error("All models exhausted (rate limit after retries). Giving up.")
             raise
         except NotFoundError:
             if model_idx + 1 < len(models):
                 model_idx += 1
+                rate_limit_retries = 0
                 logger.warning(
                     "Model unavailable on %s — falling back to %s",
                     current_model,
@@ -72,8 +91,33 @@ def run(
             logger.error("All models exhausted (unavailable). Giving up.")
             raise
         except APIStatusError as err:
+            if err.status_code == 429:
+                rate_limit_retries += 1
+                if rate_limit_retries <= _MAX_RATE_LIMIT_RETRIES_PER_MODEL:
+                    sleep_s = compute_backoff_seconds(err, rate_limit_retries)
+                    logger.warning(
+                        "429 on %s (retry %s/%s) — backing off %.1fs",
+                        current_model,
+                        rate_limit_retries,
+                        _MAX_RATE_LIMIT_RETRIES_PER_MODEL,
+                        sleep_s,
+                    )
+                    time.sleep(sleep_s)
+                    continue
+                if model_idx + 1 < len(models):
+                    model_idx += 1
+                    rate_limit_retries = 0
+                    logger.warning(
+                        "429 on %s after retries — falling back to %s",
+                        current_model,
+                        models[model_idx],
+                    )
+                    continue
+                logger.error("All models exhausted (429 after retries). Giving up.")
+                raise
             if err.status_code == 404 and model_idx + 1 < len(models):
                 model_idx += 1
+                rate_limit_retries = 0
                 logger.warning(
                     "Model returned 404 on %s — falling back to %s",
                     current_model,
@@ -113,10 +157,33 @@ def run(
 
         for tc in msg.tool_calls:
             name = tc.function.name
-            args = json.loads(tc.function.arguments)
-            logger.info("Tool call: %s(%s)", name, _fmt_args(args))
+            raw_arguments = tc.function.arguments or "{}"
+            try:
+                parsed_args = json.loads(raw_arguments)
+            except json.JSONDecodeError:
+                parsed_args = {"__invalid_json_arguments__": raw_arguments}
 
-            signature = _tool_signature(name, args)
+            logger.info("Tool call: %s(%s)", name, fmt_tool_args(parsed_args))
+
+            if isinstance(parsed_args, dict):
+                args = parsed_args
+            else:
+                msg_text = (
+                    "Invalid tool arguments: expected a JSON object, "
+                    f"got {type(parsed_args).__name__}. "
+                    "Please call the tool again with an object payload."
+                )
+                logger.warning("%s | tool=%s", msg_text, name)
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": msg_text,
+                    }
+                )
+                continue
+
+            signature = tool_signature(name, args)
             if signature == last_tool_signature:
                 duplicate_streak += 1
             else:
@@ -133,7 +200,7 @@ def run(
                     "Duplicate tool call refused (%s x%s): %s",
                     name,
                     duplicate_streak,
-                    _fmt_args(args),
+                    fmt_tool_args(args),
                 )
                 messages.append(
                     {
@@ -165,16 +232,3 @@ def run(
                     "content": result,
                 }
             )
-
-
-def _fmt_args(args: dict) -> str:
-    """Compact single-line representation of tool arguments for logging."""
-    parts = []
-    for k, v in args.items():
-        v_str = repr(v) if not isinstance(v, str) else f"{v!r}"
-        parts.append(f"{k}={v_str}")
-    return ", ".join(parts)
-
-
-def _tool_signature(name: str, args: dict) -> str:
-    return f"{name}:{json.dumps(args, ensure_ascii=False, sort_keys=True)}"

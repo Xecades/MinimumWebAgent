@@ -1,6 +1,6 @@
 from ddgs import DDGS
 
-from ..text import compact_whitespace
+from ..util import compact_whitespace
 
 TOOL_DEF: dict = {
     "type": "function",
