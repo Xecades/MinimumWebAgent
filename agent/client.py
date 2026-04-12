@@ -4,8 +4,8 @@ from openai import OpenAI
 
 # Fallback order: first available model is used; on rate-limit the next is tried.
 MODELS: list[str] = [
-    "minimax/minimax-m2.5:free",
     "openai/gpt-oss-120b:free",
+    "minimax/minimax-m2.5:free",
     "z-ai/glm-4.5-air:free",
     "arcee-ai/trinity-large-preview:free",
 ]
