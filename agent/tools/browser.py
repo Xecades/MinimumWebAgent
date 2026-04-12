@@ -112,7 +112,7 @@ TOOL_DEFS: list[dict] = [
 # ---------------------------------------------------------------------------
 
 
-def _open(url: str) -> str:
+def _open(url: str, **kwargs: object) -> str:
     out = _run("open", url)
     try:
         _run("wait", "--load", "networkidle", timeout=15)
@@ -121,19 +121,19 @@ def _open(url: str) -> str:
     return out
 
 
-def _snapshot() -> str:
+def _snapshot(**kwargs: object) -> str:
     return _run("snapshot", "-i")
 
 
-def _click(ref: str) -> str:
+def _click(ref: str, **kwargs: object) -> str:
     return _run("click", ref)
 
 
-def _fill(ref: str, text: str) -> str:
+def _fill(ref: str, text: str, **kwargs: object) -> str:
     return _run("fill", ref, text)
 
 
-def _get_text(ref: str | None = None) -> str:
+def _get_text(ref: str | None = None, **kwargs: object) -> str:
     return _run("get", "text", ref) if ref else _run("get", "text", "body")
 
 

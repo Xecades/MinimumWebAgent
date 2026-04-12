@@ -13,14 +13,26 @@ ALL_TOOLS: list[dict] = [
 def dispatch(name: str, args: dict) -> str:
     """Route a tool call by name and return the string result."""
     if name in browser.HANDLERS:
-        return browser.HANDLERS[name](**args)
+        try:
+            return browser.HANDLERS[name](**args)
+        except TypeError as exc:
+            return f"Invalid arguments for {name}: {exc}. Please fix args and retry."
     match name:
         case "http_fetch":
-            return http.handle(**args)
+            try:
+                return http.handle(**args)
+            except TypeError as exc:
+                return f"Invalid arguments for {name}: {exc}. Please fix args and retry."
         case "search_web":
-            return search.handle(**args)
+            try:
+                return search.handle(**args)
+            except TypeError as exc:
+                return f"Invalid arguments for {name}: {exc}. Please fix args and retry."
         case "terminate":
-            return terminate.handle(**args)  # may raise TerminateSignal
+            try:
+                return terminate.handle(**args)  # may raise TerminateSignal
+            except TypeError as exc:
+                return f"Invalid arguments for {name}: {exc}. Please fix args and retry."
         case _:
             return f"Unknown tool: {name!r}"
 

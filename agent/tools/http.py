@@ -152,6 +152,7 @@ def handle(
     method: str = "GET",
     headers: dict | None = None,
     body: str | None = None,
+    **kwargs: object,
 ) -> str:
     results = asyncio.run(_fetch_all(urls, method, headers or {}, body.encode() if body else None))
     return "\n\n---\n\n".join(results)

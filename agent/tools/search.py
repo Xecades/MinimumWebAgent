@@ -25,7 +25,7 @@ TOOL_DEF: dict = {
 }
 
 
-def handle(query: str, max_results: int = 5) -> str:
+def handle(query: str, max_results: int = 5, **kwargs: object) -> str:
     results = list(DDGS().text(query, max_results=max_results))
     if not results:
         return "No results found."
