@@ -1,7 +1,7 @@
 import logging
 import time
 
-from openai import APIStatusError, NotFoundError, OpenAI, RateLimitError
+from openai import APIStatusError, NotFoundError, OpenAI, PermissionDeniedError, RateLimitError
 
 from .backoff import compute_backoff_seconds
 from .streaming import create_chat_completion_streamed
@@ -58,6 +58,17 @@ def request_with_retry(
                 continue
             logger.error("All models exhausted (unavailable). Giving up.")
             raise
+        except PermissionDeniedError as err:
+            if _is_insufficient_quota(err) and state.model_idx + 1 < len(models):
+                state.model_idx += 1
+                state.rate_limit_retries = 0
+                logger.warning(
+                    "Quota exhausted on %s — falling back to %s",
+                    current_model,
+                    models[state.model_idx],
+                )
+                continue
+            raise
         except APIStatusError as err:
             if err.status_code == 429:
                 _handle_rate_limit(
@@ -79,6 +90,18 @@ def request_with_retry(
                     models[state.model_idx],
                 )
                 continue
+            if err.status_code == 403 and _is_insufficient_quota(err):
+                if state.model_idx + 1 < len(models):
+                    state.model_idx += 1
+                    state.rate_limit_retries = 0
+                    logger.warning(
+                        "Quota exhausted on %s — falling back to %s",
+                        current_model,
+                        models[state.model_idx],
+                    )
+                    continue
+                logger.error("All models exhausted (insufficient quota). Giving up.")
+                raise
             raise
 
 
@@ -118,3 +141,18 @@ def _handle_rate_limit(
 
     logger.error("All models exhausted (%s after retries). Giving up.", label.lower())
     raise err
+
+
+def _is_insufficient_quota(err: Exception) -> bool:
+    body = getattr(err, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error", {})
+        if isinstance(error, dict):
+            code = str(error.get("code", "")).lower()
+            msg = str(error.get("message", "")).lower()
+            if "insufficient" in code and "quota" in code:
+                return True
+            if "quota" in msg or "额度不足" in msg:
+                return True
+    text = str(err).lower()
+    return "insufficient_user_quota" in text or "quota" in text or "额度不足" in text
