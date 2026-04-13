@@ -1,5 +1,4 @@
 from ddgs import DDGS
-from ddgs.exceptions import DDGSException
 
 from ..util import compact_whitespace
 

@@ -1,5 +1,7 @@
 import json
 
+from ..util import repair_text
+
 
 class TerminateSignal(Exception):
     """Raised when the agent calls `terminate` with valid JSON."""
@@ -44,7 +46,7 @@ def handle(json_result: str | None = None, **kwargs: object) -> str:
         return "Invalid terminate call: missing required field `json_result`."
 
     try:
-        data = json.loads(json_result)
+        data = json.loads(repair_text(json_result))
     except json.JSONDecodeError as exc:
         return f"JSON syntax error — please fix and call terminate again: {exc}"
 

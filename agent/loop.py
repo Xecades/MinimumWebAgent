@@ -1,11 +1,16 @@
 import json
 import logging
-import time
 
-from openai import APIStatusError, NotFoundError, OpenAI, RateLimitError
+from openai import OpenAI
 
 from .tools import ALL_TOOLS, TerminateSignal, dispatch
-from .util import compute_backoff_seconds, fmt_tool_args, tool_signature
+from .util import (
+    RetryState,
+    fmt_tool_args,
+    parse_plain_text_result,
+    request_with_retry,
+    tool_signature,
+)
 
 _SYSTEM_PROMPT = """\
 You are a research agent with access to web search, browser control, and HTTP fetch tools.
@@ -22,6 +27,7 @@ Rules:
 _DUPLICATE_CALL_THRESHOLD = 3
 _MAX_DUPLICATE_REFUSALS = 8
 _MAX_RATE_LIMIT_RETRIES_PER_MODEL = 6
+_MAX_PLAIN_TEXT_ROUNDS = 3
 
 
 def run(
@@ -42,122 +48,64 @@ def run(
     last_tool_signature: str | None = None
     duplicate_streak = 0
     duplicate_refusals = 0
-    rate_limit_retries = 0
+    plain_text_rounds = 0
+    retry_state = RetryState()
 
     while True:
-        current_model = models[model_idx]
-        try:
-            response = client.chat.completions.create(
-                model=current_model,
-                messages=messages,
-                tools=ALL_TOOLS,
-                tool_choice="auto",
-            )
-            rate_limit_retries = 0
-        except RateLimitError as err:
-            rate_limit_retries += 1
-            if rate_limit_retries <= _MAX_RATE_LIMIT_RETRIES_PER_MODEL:
-                sleep_s = compute_backoff_seconds(err, rate_limit_retries)
-                logger.warning(
-                    "Rate-limited on %s (retry %s/%s) — backing off %.1fs",
-                    current_model,
-                    rate_limit_retries,
-                    _MAX_RATE_LIMIT_RETRIES_PER_MODEL,
-                    sleep_s,
-                )
-                time.sleep(sleep_s)
-                continue
-            if model_idx + 1 < len(models):
-                model_idx += 1
-                rate_limit_retries = 0
-                logger.warning(
-                    "Rate-limited on %s after retries — falling back to %s",
-                    current_model,
-                    models[model_idx],
-                )
-                continue
-            logger.error("All models exhausted (rate limit after retries). Giving up.")
-            raise
-        except NotFoundError:
-            if model_idx + 1 < len(models):
-                model_idx += 1
-                rate_limit_retries = 0
-                logger.warning(
-                    "Model unavailable on %s — falling back to %s",
-                    current_model,
-                    models[model_idx],
-                )
-                continue
-            logger.error("All models exhausted (unavailable). Giving up.")
-            raise
-        except APIStatusError as err:
-            if err.status_code == 429:
-                rate_limit_retries += 1
-                if rate_limit_retries <= _MAX_RATE_LIMIT_RETRIES_PER_MODEL:
-                    sleep_s = compute_backoff_seconds(err, rate_limit_retries)
-                    logger.warning(
-                        "429 on %s (retry %s/%s) — backing off %.1fs",
-                        current_model,
-                        rate_limit_retries,
-                        _MAX_RATE_LIMIT_RETRIES_PER_MODEL,
-                        sleep_s,
-                    )
-                    time.sleep(sleep_s)
-                    continue
-                if model_idx + 1 < len(models):
-                    model_idx += 1
-                    rate_limit_retries = 0
-                    logger.warning(
-                        "429 on %s after retries — falling back to %s",
-                        current_model,
-                        models[model_idx],
-                    )
-                    continue
-                logger.error("All models exhausted (429 after retries). Giving up.")
-                raise
-            if err.status_code == 404 and model_idx + 1 < len(models):
-                model_idx += 1
-                rate_limit_retries = 0
-                logger.warning(
-                    "Model returned 404 on %s — falling back to %s",
-                    current_model,
-                    models[model_idx],
-                )
-                continue
-            raise
-
-        msg = response.choices[0].message
+        msg, current_model = request_with_retry(
+            client=client,
+            models=models,
+            messages=messages,
+            tools=ALL_TOOLS,
+            tool_choice="auto",
+            logger=logger,
+            state=retry_state,
+            max_rate_limit_retries_per_model=_MAX_RATE_LIMIT_RETRIES_PER_MODEL,
+        )
 
         # Log reasoning/thinking if the model returns it.
-        reasoning = getattr(msg, "reasoning", None)
+        reasoning = msg.get("reasoning")
         if reasoning:
             logger.debug("Model reasoning: %s", reasoning)
         # Build a clean assistant message (strip vendor-specific fields).
-        assistant_msg: dict = {"role": "assistant", "content": msg.content or ""}
-        if msg.tool_calls:
-            assistant_msg["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-                }
-                for tc in msg.tool_calls
-            ]
+        assistant_msg: dict = {"role": "assistant", "content": msg.get("content", "")}
+        if msg.get("tool_calls"):
+            assistant_msg["tool_calls"] = msg["tool_calls"]
         messages.append(assistant_msg)
 
-        if not msg.tool_calls:
+        if not msg.get("tool_calls"):
+            plain_text_rounds += 1
+            content = (msg.get("content") or "").strip()
+            parsed_now = parse_plain_text_result(content)
+            if parsed_now is not None:
+                logger.info("Agent terminated from plain text JSON fallback.")
+                return parsed_now
+
+            if plain_text_rounds >= _MAX_PLAIN_TEXT_ROUNDS and content:
+                logger.warning(
+                    "Model returned plain text %s times without tool call; auto-terminating.",
+                    plain_text_rounds,
+                )
+                logger.info("Agent terminated from plain text fallback.")
+                return {"message": content}
+
             logger.debug("Model returned plain text — nudging to call terminate.")
             messages.append(
                 {
                     "role": "user",
-                    "content": "Please call the `terminate` tool with your JSON result to finish.",
+                    "content": (
+                        "You must call the `terminate` tool now. "
+                        'Arguments format: {"json_result": "{\\"key\\":\\"value\\"}"}. '
+                        "Do not reply with plain text."
+                    ),
                 }
             )
             continue
+        plain_text_rounds = 0
 
-        for tc in msg.tool_calls:
-            name = tc.function.name
-            raw_arguments = tc.function.arguments or "{}"
+        for tc in msg["tool_calls"]:
+            name = tc["function"]["name"]
+            raw_arguments = tc["function"].get("arguments") or "{}"
             try:
                 parsed_args = json.loads(raw_arguments)
             except json.JSONDecodeError:
@@ -177,7 +125,7 @@ def run(
                 messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": tc.id,
+                        "tool_call_id": tc["id"],
                         "content": msg_text,
                     }
                 )
@@ -205,7 +153,7 @@ def run(
                 messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": tc.id,
+                        "tool_call_id": tc["id"],
                         "content": refusal,
                     }
                 )
@@ -228,7 +176,7 @@ def run(
             messages.append(
                 {
                     "role": "tool",
-                    "tool_call_id": tc.id,
+                    "tool_call_id": tc["id"],
                     "content": result,
                 }
             )
