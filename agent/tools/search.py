@@ -1,4 +1,5 @@
 from ddgs import DDGS
+from ddgs.exceptions import DDGSException
 
 from ..util import compact_whitespace
 
@@ -16,7 +17,7 @@ TOOL_DEF: dict = {
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Maximum number of results to return (default: 5).",
+                    "description": "Maximum number of results to return (default: 4).",
                 },
             },
             "required": ["query"],
@@ -25,8 +26,11 @@ TOOL_DEF: dict = {
 }
 
 
-def handle(query: str, max_results: int = 5, **kwargs: object) -> str:
-    results = list(DDGS().text(query, max_results=max_results))
+def handle(query: str, max_results: int = 4, **kwargs: object) -> str:
+    try:
+        results = list(DDGS().text(query, max_results=max_results))
+    except Exception as exc:
+        return f"Search failed: {exc}"
     if not results:
         return "No results found."
     lines = []
