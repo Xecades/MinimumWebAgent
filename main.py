@@ -5,7 +5,7 @@ import uuid
 
 from dotenv import load_dotenv
 
-from agent.client import MODELS, make_client
+from agent.client import get_models, make_client
 from agent.logger import make_logger
 from agent.loop import run
 from agent.tools import browser
@@ -26,9 +26,10 @@ def main() -> None:
 
     logger = make_logger(session_id)
     client = make_client()
+    models = get_models()
 
     try:
-        result = run(client, MODELS, query, logger)
+        result = run(client, models, query, logger)
     finally:
         # Always clean up the browser session to avoid leaked processes.
         subprocess.run(
